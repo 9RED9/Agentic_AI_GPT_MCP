@@ -21,15 +21,6 @@
 #
 # **OpenAI Agents SDK**는 **에이전트 기반 AI 애플리케이션**을 개발할 수 있게 해주는 도구입니다.  
 #
-# **핵심 구성 요소**  
-#
-# - **에이전트 (Agents)**:  
-#   LLM에 **지시문(instructions)** 과 **도구(tools)** 를 장착한 실행 단위  
-# - **핸드오프 (Handoffs)**:  
-#   특정 작업을 다른 에이전트에게 **위임**할 수 있도록 해줌  
-# - **가드레일 (Guardrails)**:  
-#   에이전트에게 전달되는 입력을 **검증**하는 장치
-#
 # ### 주요 기능 요약:
 #
 # - **에이전트 루프 (Agent Loop)**:  
@@ -93,7 +84,16 @@ print(result.final_output)
 # %% [markdown]
 # ### Simple Handoff Example
 #
-# 언어에 따라 적절한 에이전트에 작업을 위임(handoff)
+# 언어에 따라 적절한 에이전트에 작업을 위임(handoff)합니다.
+#
+# Handoffs는 LLM에게 **도구(tool)** 로 표현됩니다.  
+# 예) `Korean agent`에 대한 핸드오프 → LLM 도구 이름: `transfer_to_korean_agent`
+#
+# **핸드오프 지정 방법 2가지:**
+# - **Agent 인스턴스 직접 전달** : `handoffs=[korean_agent, english_agent]`
+# - **`handoff()` 함수 사용** : `handoffs=[handoff(agent, on_handoff=콜백, ...)]`  
+#   → 콜백(`on_handoff`), 도구 이름/설명 재정의, 입력 데이터 타입, 입력 필터 등 **고급 옵션** 제공  
+#   → 심화 내용은 `02_Handoffs.py` 참고
 
 # %%
 from agents import Agent, Runner
@@ -129,6 +129,42 @@ result = await Runner.run(handoff_agent, input="Are you happy?")
 print(result.final_output)  # 영어 에이전트가 응답
 
 # %% [markdown]
+# #### `handoff()` 함수를 사용한 예시
+#
+# `handoff()` 함수를 사용하면 Agent 직접 전달과 동일하게 동작하지만,  
+# `tool_name_override`, `tool_description_override`, `on_handoff` 등 **추가 옵션**을 지정할 수 있습니다.
+
+# %%
+from agents import handoff
+
+# Triage Agent 정의 — 사용자 요청의 언어를 판단하여 적절한 에이전트로 위임
+triage_agent = Agent(
+    name="Triage agent",
+    instructions="요청에 사용된 언어에 따라 적절한 에이전트에게 넘겨주세요.",
+    model=Model,
+    handoffs=[
+        # 방법 1: Agent 인스턴스 직접 전달
+        # → 자동으로 "transfer_to_korean_agent"라는 도구가 생성됨
+        korean_agent,
+
+        # 방법 2: handoff() 함수 사용 — 도구 이름과 설명을 직접 지정 가능
+        # → tool_name_override: LLM이 호출할 도구 이름을 커스터마이징
+        # → tool_description_override: LLM이 이 핸드오프를 선택하는 판단 기준 설명
+        handoff(
+            english_agent,
+            tool_name_override="transfer_to_english",        # 기본값 대신 커스텀 도구 이름
+            tool_description_override="영어 요청일 때 사용",   # LLM에게 전달되는 도구 설명
+        ),
+    ],
+)
+
+# 영어로 질문 → Triage Agent가 영어 요청으로 판단 → english_agent로 핸드오프
+result = await Runner.run(triage_agent, input="What is the capital of France?")
+
+# english_agent가 생성한 최종 응답 출력
+print(result.final_output)
+
+# %% [markdown]
 # ------------------------
 # ## 도구 (Tools)
 #
@@ -149,19 +185,10 @@ print(result.final_output)  # 영어 에이전트가 응답
 #
 # **Agents SDK**에서는 **모든 Python 함수를 도구(tool)** 로 사용할 수 있습니다. SDK는 이러한 도구를 자동으로 설정해줍니다:
 #
-# 1. **도구 이름**은 Python 함수의 이름에서 자동으로 생성됩니다.  
-#
-# 2. **도구 설명(description)** 은 함수의 **docstring**에서 가져옵니다.  
-#
-# 3. 함수 입력값의 **스키마(schema)** 는 함수의 **인자(arguments)** 로부터 자동 생성됩니다.
-#
+# 1. **도구 이름**은 Python 함수의 이름에서 자동으로 생성됩니다.   
+# 2. **도구 설명(description)** 은 함수의 **docstring**에서 가져옵니다.   
+# 3. 함수 입력값의 **스키마(schema)** 는 함수의 **인자(arguments)** 로부터 자동 생성됩니다. 
 # 4. 각 입력값에 대한 **설명**도 함수의 docstring에서 추출됩니다.  
-#
-# ### 3. **Agents as tools (에이전트를 도구처럼 사용)**  
-# 이 방식은 **하나의 에이전트를 도구로 사용**할 수 있게 해줍니다.  
-# 즉, **핸드오프 없이도** 에이전트가 다른 에이전트를 호출할 수 있습니다.
-#
-# -------------------------
 
 # %% [markdown]
 # `Runner.run()`을 호출하면, 최종 결과가 나올 때까지 루프가 실행됩니다.  이 루프의 동작 방식은 다음과 같습니다:
@@ -173,10 +200,10 @@ print(result.final_output)  # 영어 에이전트가 응답
 #    모델이 응답을 반환하며, 여기에는 **툴 호출(tool calls)**이 포함될 수 있습니다.
 #
 # 3. **최종 출력이 있는 경우:**  
-#    응답에 **최종 출력(final output)**이 포함되어 있다면, 이를 반환하고 루프를 종료.
+#    응답에 **최종 출력(final output)** 이 포함되어 있다면, 이를 반환하고 루프를 종료.
 #
 # 4. **핸드오프가 있는 경우:**  
-#    응답에 **다른 에이전트로의 핸드오프(handoff)**가 있으면, 현재 에이전트를 새로운 에이전트로 설정한 후 1단계부터 다시 시작.
+#    응답에 **다른 에이전트로의 핸드오프(handoff)** 가 있으면, 현재 에이전트를 새로운 에이전트로 설정한 후 1단계부터 다시 시작.
 #
 # 5. **툴 호출 처리:**  
 #    툴 호출이 있을 경우, 해당 툴을 실행하고 결과 메시지를 기록한 다음 1단계로 되돌아갑니다.
@@ -240,6 +267,63 @@ print(result.final_output)
 
 # %%
 result = await Runner.run(agent, input="서울의 날씨 곱하기 20은 얼마입니까?")
+print(result.final_output)
+
+# %% [markdown]
+# ### Agents as tools (에이전트를 도구처럼 사용)
+#
+# `agent.as_tool()`을 사용하면 에이전트를 일반 함수 도구처럼 등록할 수 있습니다.  
+# **핸드오프(Handoff)** 와의 핵심 차이:
+#
+# | 구분 | Handoff | Agents as tools |
+# |------|---------|-----------------|
+# | 제어권 | 다음 에이전트로 넘어감 | 원래 에이전트가 유지 |
+# | 응답 주체 | 핸드오프 받은 에이전트 | 원래 에이전트 |
+# | 용도 | 작업 전체를 위임 | 서브 에이전트를 도구처럼 호출 후 결과 활용 |
+
+# %%
+from agents import Agent, Runner
+
+summarizer_agent = Agent(
+    name="Summarizer",
+    instructions="Summarize the given text into one concise sentence. Always respond in the same language as the input text.",
+    model=Model
+)
+
+translator_agent = Agent(
+    name="Translator",
+    instructions="주어진 텍스트를 한국어로 번역하세요.",
+    model=Model
+)
+
+assistant_agent = Agent(
+    name="Assistant",
+    instructions=(
+        "사용자의 요청에 따라 요약 또는 번역 도구를 사용하여 작업을 처리하세요. "
+        "두 작업이 모두 필요하면 순서대로 도구를 호출하세요."
+    ),
+    model=Model,
+    tools=[
+        summarizer_agent.as_tool(
+            tool_name="summarize",
+            tool_description="텍스트를 한 문장으로 요약할 때 사용",
+        ),
+        translator_agent.as_tool(
+            tool_name="translate_to_korean",
+            tool_description="텍스트를 한국어로 번역할 때 사용",
+        ),
+    ],
+)
+
+text = (
+    "The James Webb Space Telescope has captured stunning images of distant galaxies, "
+    "revealing details about the early universe that were previously impossible to observe."
+)
+
+result = await Runner.run(
+    assistant_agent,
+    input=f"다음 텍스트를 요약하고 한국어로 번역해주세요:\n\n{text}"
+)
 print(result.final_output)
 
 # %% [markdown]

@@ -89,7 +89,7 @@ refresh_button = st.sidebar.button("대화 내용 초기화")
 
 if refresh_button:
     st.session_state.messages = []
-    st.rerun()
+    st.experimental_rerun()
 
 # 데이터베이스 정보
 if st.session_state.db:

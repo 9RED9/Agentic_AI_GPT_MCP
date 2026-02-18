@@ -143,4 +143,4 @@ else:
         st.sidebar.subheader("최근 검색어")
         for query in st.session_state.search_history[:5]:
             if st.sidebar.button(query, key=f"history_{query}"):
-                st.rerun()
+                st.experimental_rerun()

@@ -119,7 +119,7 @@ refresh_button = st.sidebar.button("대화 내용 초기화")
 
 if refresh_button:
     st.session_state.messages = []
-    st.rerun()
+    st.experimental_rerun()
 
 # ---------------------------------------------------------------------------------
 # 메인 영역: 채팅

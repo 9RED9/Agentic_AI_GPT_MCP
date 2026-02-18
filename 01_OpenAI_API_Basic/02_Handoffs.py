@@ -1,0 +1,365 @@
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.0
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # 02. Handoffs (핸드오프 심화)
+#
+# **핸드오프(Handoff)** 는 에이전트가 특정 작업을 다른 에이전트에게 위임하는 기능입니다.  
+# 핸드오프는 LLM에게 **도구(tool)** 로 표현됩니다.  
+# 예) `Refund Agent`로의 핸드오프 → LLM 도구 이름: `transfer_to_refund_agent`
+#
+# | 방식 | 예시 | 특징 |
+# |------|------|------|
+# | Agent 직접 전달 | `handoffs=[billing_agent]` | 간단, 기본 동작 |
+# | `handoff()` 함수 | `handoffs=[handoff(billing_agent, on_handoff=...)]` | 콜백, 이름 재정의, 입력 필터 등 고급 옵션 |
+#
+# **`handoff()` 함수의 주요 파라미터:**
+#
+# | 파라미터 | 설명 |
+# |---------|------|
+# | `agent` | 위임할 대상 에이전트 |
+# | `tool_name_override` | LLM에게 노출되는 도구 이름 재정의 (기본: `transfer_to_<agent_name>`) |
+# | `tool_description_override` | 도구 설명 재정의 |
+# | `on_handoff` | 핸드오프 호출 시 실행되는 콜백 함수 |
+# | `input_type` | LLM이 핸드오프 시 함께 전달할 데이터 타입 (Pydantic 모델) |
+# | `input_filter` | 다음 에이전트에게 전달되는 대화 기록 필터링 함수 |
+# | `is_enabled` | 핸드오프 활성화 여부 (bool 또는 런타임 함수) |
+
+# %%
+from dotenv import load_dotenv
+load_dotenv()
+
+# %%
+Model = "gpt-5-nano"
+
+# %% [markdown]
+# ## 1. handoff() 함수 기본 사용법
+#
+# Agent 인스턴스를 직접 전달하는 방식과 `handoff()` 함수를 사용하는 방식은 **동일하게 동작**합니다.  
+# `handoff()` 함수 형태는 추가 옵션이 필요할 때 사용합니다.
+
+# %%
+from agents import Agent, Runner, handoff
+
+billing_agent = Agent(
+    name="Billing agent",
+    instructions="당신은 청구 관련 질문을 전문으로 처리합니다.",
+    model=Model
+)
+
+refund_agent = Agent(
+    name="Refund agent",
+    instructions="당신은 환불 요청을 전문으로 처리합니다.",
+    model=Model
+)
+
+triage_agent = Agent(
+    name="Triage agent",
+    instructions="사용자 요청을 분류하여 적합한 에이전트에게 넘겨주세요.",
+    model=Model,
+    handoffs=[
+        billing_agent,                       # Agent 인스턴스 직접 전달
+        handoff(                             # handoff() 함수 — 동일하게 동작
+            refund_agent,
+            tool_name_override="request_refund",
+            tool_description_override="환불 요청이 있을 때 사용",
+        ),
+    ],
+)
+
+result = await Runner.run(triage_agent, input="제 청구서에 오류가 있는 것 같습니다.")
+print(result.final_output)
+
+# %% [markdown]
+# ## 2. on_handoff 콜백
+#
+# `on_handoff` 콜백은 핸드오프가 호출되는 순간 실행됩니다.  
+# 데이터 준비, 로깅, 알림 등 사이드 이펙트 처리에 유용합니다.
+#
+# - `input_type` 없이 사용 시: `def on_handoff(ctx: RunContextWrapper[None])`  
+# - `input_type` 함께 사용 시: `async def on_handoff(ctx, input_data: MyModel)` (섹션 3 참고)
+
+# %%
+from agents import Agent, Runner, handoff, RunContextWrapper
+
+def on_billing_handoff(ctx: RunContextWrapper[None]):
+    print("[로그] Billing Agent로 핸드오프 발생")
+
+def on_refund_handoff(ctx: RunContextWrapper[None]):
+    print("[로그] Refund Agent로 핸드오프 발생")
+
+billing_agent = Agent(
+    name="Billing agent",
+    instructions="당신은 청구 관련 질문을 전문으로 처리합니다.",
+    model=Model
+)
+
+refund_agent = Agent(
+    name="Refund agent",
+    instructions="당신은 환불 요청을 전문으로 처리합니다.",
+    model=Model
+)
+
+triage_agent = Agent(
+    name="Triage agent",
+    instructions="사용자 요청을 분류하여 적합한 에이전트에게 넘겨주세요.",
+    model=Model,
+    handoffs=[
+        handoff(billing_agent, on_handoff=on_billing_handoff),
+        handoff(refund_agent, on_handoff=on_refund_handoff),
+    ],
+)
+
+result = await Runner.run(triage_agent, input="환불을 받고 싶습니다.")
+print(result.final_output)
+
+# %% [markdown]
+# ## 3. Handoff 입력 데이터 (input_type)
+#
+# `input_type`을 사용하면 LLM이 핸드오프 시 **구조화된 데이터를 함께 전달**하도록 할 수 있습니다.  
+# 예를 들어, 에스컬레이션 이유를 함께 전달받아 로깅하거나 처리에 활용할 수 있습니다.
+#
+# - `input_type`이 있을 때 `on_handoff`는 `async def`로 정의하고 두 번째 인자로 `input_data`를 받습니다.
+
+# %%
+from pydantic import BaseModel
+from agents import Agent, Runner, handoff, RunContextWrapper
+
+class EscalationData(BaseModel):
+    reason: str
+
+async def on_escalation(ctx: RunContextWrapper[None], input_data: EscalationData):
+    print(f"[에스컬레이션] 이유: {input_data.reason}")
+
+escalation_agent = Agent(
+    name="Escalation agent",
+    instructions="당신은 복잡한 문제를 처리하는 전문 상담사입니다.",
+    model=Model
+)
+
+support_agent = Agent(
+    name="Support agent",
+    instructions=(
+        "일반 고객 지원 요청을 처리하세요. "
+        "복잡하거나 민감한 문제는 에스컬레이션 에이전트에게 이유와 함께 넘겨주세요."
+    ),
+    model=Model,
+    handoffs=[
+        handoff(
+            escalation_agent,
+            on_handoff=on_escalation,
+            input_type=EscalationData,
+        ),
+    ],
+)
+
+result = await Runner.run(support_agent, input="제 계정이 해킹당한 것 같습니다. 즉시 도움이 필요합니다!")
+print(result.final_output)
+
+# %% [markdown]
+# ## 4. Input Filter (입력 필터)
+#
+# 핸드오프가 발생하면 새로운 에이전트는 기존 대화 기록 전체를 받습니다.  
+# `input_filter`를 사용하면 다음 에이전트에게 전달되는 **대화 기록을 가공**할 수 있습니다.
+#
+# `agents.extensions.handoff_filters`에는 자주 사용되는 내장 필터가 제공됩니다:
+#
+# | 필터 | 설명 |
+# |------|------|
+# | `remove_all_tools` | 대화 기록에서 모든 도구 호출/결과 제거 |
+
+# %%
+from agents import Agent, Runner, handoff
+from agents.extensions import handoff_filters
+
+faq_agent = Agent(
+    name="FAQ agent",
+    instructions="자주 묻는 질문에 답변합니다.",
+    model=Model
+)
+
+order_agent = Agent(
+    name="Order agent",
+    instructions="주문 상태를 확인하고 주문 관련 문의를 처리합니다.",
+    model=Model
+)
+
+main_agent = Agent(
+    name="Main agent",
+    instructions="고객 문의를 처리하세요. 필요 시 적절한 전문 에이전트에게 넘겨주세요.",
+    model=Model,
+    handoffs=[
+        handoff(
+            faq_agent,
+            input_filter=handoff_filters.remove_all_tools,
+        ),
+        order_agent,
+    ],
+)
+
+result = await Runner.run(main_agent, input="배송 추적은 어떻게 하나요?")
+print(result.final_output)
+
+# %% [markdown]
+# ## 5. 권장 프롬프트 (RECOMMENDED_PROMPT_PREFIX)
+#
+# LLM이 핸드오프를 올바르게 이해하고 활용하려면 관련 정보를 프롬프트에 포함시키는 것이 좋습니다.  
+# `agents.extensions.handoff_prompt`에서 권장 프롬프트를 제공합니다:
+#
+# | 방법 | 설명 |
+# |------|------|
+# | `RECOMMENDED_PROMPT_PREFIX` | 프롬프트 앞에 직접 붙여 사용하는 문자열 상수 |
+# | `prompt_with_handoff_instructions(prompt)` | 기존 프롬프트에 권장 내용을 자동으로 추가하는 함수 |
+
+# %%
+from agents import Agent, Runner, handoff
+from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX, prompt_with_handoff_instructions
+
+billing_agent = Agent(
+    name="Billing agent",
+    instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+당신은 청구 및 결제 관련 질문을 처리하는 전문가입니다.""",
+    model=Model
+)
+
+refund_agent = Agent(
+    name="Refund agent",
+    instructions=prompt_with_handoff_instructions("당신은 환불 처리 전문가입니다."),
+    model=Model
+)
+
+triage_agent = Agent(
+    name="Triage agent",
+    instructions=prompt_with_handoff_instructions(
+        "사용자 요청을 분석하여 청구 질문은 Billing agent에게, 환불 요청은 Refund agent에게 넘겨주세요."
+    ),
+    model=Model,
+    handoffs=[billing_agent, refund_agent],
+)
+
+result = await Runner.run(triage_agent, input="지난달 청구 금액이 잘못된 것 같습니다.")
+print(result.final_output)
+
+# %% [markdown]
+# ## 6. 종합 예제 - 고객 지원 시스템
+#
+# 여러 핸드오프 기능을 조합한 고객 지원 시스템입니다.
+#
+# ```
+# 사용자
+#   └─→ Triage Agent (분류)
+#         ├─→ Order Agent    (주문 조회)
+#         ├─→ Refund Agent   (환불 처리, on_handoff + input_type)
+#         └─→ FAQ Agent      (일반 문의, input_filter 적용)
+# ```
+
+# %%
+from pydantic import BaseModel
+from agents import Agent, Runner, handoff, RunContextWrapper
+from agents.extensions import handoff_filters
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
+
+class RefundRequest(BaseModel):
+    order_id: str
+    reason: str
+
+async def on_refund_handoff(ctx: RunContextWrapper[None], input_data: RefundRequest):
+    print(f"[환불 요청 접수] 주문번호: {input_data.order_id}, 사유: {input_data.reason}")
+
+order_agent = Agent(
+    name="Order Agent",
+    instructions=prompt_with_handoff_instructions(
+        "주문 상태 및 배송 관련 문의를 처리합니다. 주문번호를 확인하고 현황을 안내하세요."
+    ),
+    model=Model
+)
+
+refund_agent = Agent(
+    name="Refund Agent",
+    instructions=prompt_with_handoff_instructions(
+        "환불 요청을 처리합니다. 고객에게 환불 절차와 소요 시간을 안내하세요."
+    ),
+    model=Model
+)
+
+faq_agent = Agent(
+    name="FAQ Agent",
+    instructions=prompt_with_handoff_instructions(
+        "자주 묻는 질문에 답변합니다. 배송, 반품 정책, 결제 방법 등 일반적인 문의를 처리하세요."
+    ),
+    model=Model
+)
+
+triage_agent = Agent(
+    name="Triage Agent",
+    instructions=prompt_with_handoff_instructions(
+        "고객 문의를 분류하세요:\n"
+        "- 주문/배송 조회 → Order Agent\n"
+        "- 환불 요청 → Refund Agent (주문번호와 사유 필요)\n"
+        "- 일반 문의/FAQ → FAQ Agent"
+    ),
+    model=Model,
+    handoffs=[
+        order_agent,
+        handoff(
+            refund_agent,
+            on_handoff=on_refund_handoff,
+            input_type=RefundRequest,
+        ),
+        handoff(
+            faq_agent,
+            input_filter=handoff_filters.remove_all_tools,
+        ),
+    ],
+)
+
+# %%
+print("=== 테스트 1: 주문 조회 ===")
+result = await Runner.run(triage_agent, "주문번호 ORD-1234의 배송 현황을 알고 싶습니다.")
+print(result.final_output)
+
+# %%
+print("=== 테스트 2: 환불 요청 ===")
+result = await Runner.run(triage_agent, "주문번호 ORD-5678 상품을 환불하고 싶습니다. 사이즈가 맞지 않아서요.")
+print(result.final_output)
+
+# %%
+print("=== 테스트 3: 일반 문의 ===")
+result = await Runner.run(triage_agent, "반품 정책이 어떻게 되나요?")
+print(result.final_output)
+
+# %% [markdown]
+# ### 실습 문제
+#
+# 아래 요구사항에 맞는 **여행 예약 지원 시스템**을 구현하세요.
+#
+# **에이전트 구성:**
+#
+# 1. **Triage Agent**: 사용자 요청을 분류하여 적절한 에이전트에 핸드오프
+# 2. **Flight Agent**: 항공편 예약 및 조회 처리
+# 3. **Hotel Agent**: 호텔 예약 및 조회 처리
+# 4. **Cancellation Agent**: 예약 취소 처리 (`on_handoff` 콜백으로 취소 정보 로깅)
+#
+# **요구사항:**
+# - `Cancellation Agent`로 핸드오프 시 `input_type`으로 예약 번호(`booking_id: str`)와 취소 사유(`reason: str`)를 전달받아 출력
+# - 모든 에이전트에 `prompt_with_handoff_instructions` 적용
+# - `Flight Agent`, `Hotel Agent`는 `handoff()` 함수 형태로 지정
+#
+# **테스트 입력:**
+# - `"서울-제주 항공편을 예약하고 싶습니다."` → Flight Agent 응답
+# - `"제주도 호텔을 3박 예약하려고 합니다."` → Hotel Agent 응답
+# - `"예약번호 BK-999 항공편을 취소하고 싶어요. 일정이 바뀌어서요."` → Cancellation Agent 핸드오프 + 콜백 출력
+
+# %%
