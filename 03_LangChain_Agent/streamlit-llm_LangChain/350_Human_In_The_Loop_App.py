@@ -41,6 +41,7 @@ if "llm" not in st.session_state:
     st.session_state.llm = init_chat_model("gpt-5-nano", model_provider="openai")
 
 if "agent" not in st.session_state:
+    # Human-in-the-Loop 미들웨어 설정
     hitl_middleware = HumanInTheLoopMiddleware(
         interrupt_on={
             "request_payment_approval": {
@@ -64,6 +65,9 @@ if "thread_id" not in st.session_state:
 if "pending_approval" not in st.session_state:
     st.session_state.pending_approval = None
 
+if "flash_message" not in st.session_state:
+    st.session_state.flash_message = None
+
 # ---------------------------------------------------------------------------------
 # 사이드바
 # ---------------------------------------------------------------------------------
@@ -73,11 +77,21 @@ refresh_button = st.sidebar.button("초기화")
 if refresh_button:
     st.session_state.thread_id = f"payment-{uuid4()}"
     st.session_state.pending_approval = None
-    st.experimental_rerun()
+    st.session_state.flash_message = None
+    st.rerun()
 
 # ---------------------------------------------------------------------------------
 # 메인 영역
 # ---------------------------------------------------------------------------------
+# flash 메시지 표시 (rerun 후 1회만 표시)
+if st.session_state.flash_message:
+    msg_type, msg_text = st.session_state.flash_message
+    st.session_state.flash_message = None
+    if msg_type == "success":
+        st.success(msg_text)
+    elif msg_type == "info":
+        st.info(msg_text)
+# 대화 스레드 설정 (thread_id로 대화 식별)
 config = {"configurable": {"thread_id": st.session_state.thread_id}}
 
 # 승인 대기 중인 경우
@@ -88,21 +102,50 @@ if st.session_state.pending_approval:
     
     with col1:
         if st.button("✅ 승인", type="primary"):
+            # 승인 결정을 Command로 래핑하여 중단된 agent에 전달
             decision = Command(resume={"decisions": [{"type": "approve"}]})
+            
+            # 중단된 agent를 승인 결정으로 재개 (이전 thread_id 유지)
             result = st.session_state.agent.invoke(decision, config=config)
+            
+            # 승인 처리 완료 후 대기 중인 승인 요청 초기화
             st.session_state.pending_approval = None
-            st.success("승인되었습니다!")
-            st.experimental_rerun()
-    
+            
+            # 성공 플래시 메시지 설정 (다음 렌더링 시 표시)
+            st.session_state.flash_message = ("success", "승인되었습니다!")
+            
+            # UI 새로고침 (플래시 메시지 표시 및 승인 UI 제거)
+            st.rerun()
+
     with col2:
         if st.button("❌ 거부"):
+            # 거부 결정을 Command로 래핑하여 중단된 agent에 전달
             decision = Command(resume={"decisions": [{"type": "reject"}]})
+            
+            # 중단된 agent를 거부 결정으로 재개
             result = st.session_state.agent.invoke(decision, config=config)
+            
+            # 거부 처리 완료 후 대기 중인 승인 요청 초기화
             st.session_state.pending_approval = None
-            st.info("거부되었습니다.")
-            st.experimental_rerun()
+            
+            # 거부 플래시 메시지 설정 (다음 렌더링 시 표시)
+            st.session_state.flash_message = ("info", "거부되었습니다.")
+            
+            # UI 새로고침 (플래시 메시지 표시 및 승인 UI 제거)
+            st.rerun()
     
-    st.json(st.session_state.pending_approval)
+    # 승인 요청 상세 정보 표시
+    for interrupt in st.session_state.pending_approval:
+        val = interrupt.value if hasattr(interrupt, "value") else interrupt
+        for req in val.get("action_requests", []):
+            args = req.get("args", {})
+            st.markdown(
+                f"| 항목 | 내용 |\n"
+                f"|------|------|\n"
+                f"| **요청자** | {args.get('requester', '-')} |\n"
+                f"| **금액** | {args.get('amount', 0):,}원 |\n"
+                f"| **목적** | {args.get('purpose', '-')} |"
+            )
 else:
     # 결제 요청 폼
     with st.form(key='payment_form'):
@@ -116,6 +159,7 @@ else:
         
         if submit_button:
             with st.spinner("요청 처리 중..."):
+                # 에이전트 실행 및 인터럽트 여부 확인
                 try:
                     response = st.session_state.agent.invoke(
                         {
@@ -139,7 +183,7 @@ else:
                     interrupts = response.get("__interrupt__", [])
                     if interrupts:
                         st.session_state.pending_approval = interrupts
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.success("요청이 처리되었습니다.")
                 except Exception as e:

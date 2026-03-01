@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import agents; print\\(agents.__file__\\)\")",
+      "Bash(jupytext --sync 09_Chatbot_RAG_Agent.ipynb)",
+      "Bash(find \"c:\\\\Users\\\\trimu\\\\OneDrive\\\\Agentic_AI_GPT_MCP\\\\01_OpenAI_API_Basic\"\" -type f \\\\\\( -name \"*.py\" -o -name \"*.ipynb \" \\\\\\))"
+    ]
+  }
+}

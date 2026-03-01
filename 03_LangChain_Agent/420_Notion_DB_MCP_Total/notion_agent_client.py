@@ -22,7 +22,7 @@ model = init_chat_model("gpt-5-mini", model_provider="openai")
 
 # Chinook MCP 서버: 03_LangChain_Agent/400_DB_MCP_Agent 사용 (05 삭제 후 통합)
 _project_root = Path(__file__).resolve().parent.parent
-_chinook_server_script = _project_root / "03_LangChain_Agent" / "400_DB_MCP_Agent" / "agent_server.py"
+_chinook_server_script = _project_root / "400_DB_MCP_Agent" / "agent_server.py"
 chinook_server_params = StdioServerParameters(
     command="python",
     args=[str(_chinook_server_script)],

@@ -5,6 +5,5 @@
 
 # 생성된 데이터 폴더 및 파일
 chroma_langchain_db/
-*.db
 long_term_memory.db
 memory_checkpoints.db

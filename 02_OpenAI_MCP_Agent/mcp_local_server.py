@@ -123,6 +123,12 @@ def get_table_schema(table_name: str) -> str:
         return f"스키마 조회 중 오류 발생: {str(e)}"
 
 
-# ---------- 서버 실행 (stdio: 클라이언트가 subprocess로 기동) ----------
+# ---------- 서버 실행 ----------
+# 기본: stdio (mcp_1_stdio_client.py가 subprocess로 기동)
+# --http 옵션: Streamable HTTP (mcp_3_streamable_client.py용)
+#   python mcp_local_server.py --http
 if __name__ == "__main__":
-    mcp.run()
+    if "--http" in sys.argv:
+        mcp.run(transport="streamable-http", host="127.0.0.1", port=8000)
+    else:
+        mcp.run()

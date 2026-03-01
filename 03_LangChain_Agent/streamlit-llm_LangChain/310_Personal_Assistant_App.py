@@ -31,30 +31,29 @@ def send_email(to: list[str], subject: str, body: str, cc: list[str] = []) -> st
     return f"이메일 전송 완료 → 수신자: {', '.join(to)} | 제목: {subject}"
 
 # ---------------------------------------------------------------------------------
-# 하위 에이전트 생성
+# 에이전트 생성 (일반 변수 — session_state가 아닌 직접 참조)
 # ---------------------------------------------------------------------------------
-if "llm" not in st.session_state:
-    st.session_state.llm = init_chat_model("gpt-5-nano", model_provider="openai")
+llm = init_chat_model("gpt-5-nano", model_provider="openai")
 
-if "calendar_agent" not in st.session_state:
-    st.session_state.calendar_agent = create_agent(
-        st.session_state.llm,
-        tools=[create_calendar_event],
-        system_prompt="당신은 캘린더 일정 관리 도우미입니다."
-    )
+# 캘린더 에이전트
+calendar_agent = create_agent(
+    llm,
+    tools=[create_calendar_event],
+    system_prompt="당신은 캘린더 일정 관리 도우미입니다."
+)
 
-if "email_agent" not in st.session_state:
-    st.session_state.email_agent = create_agent(
-        st.session_state.llm,
-        tools=[send_email],
-        system_prompt="당신은 이메일 작성 도우미입니다."
-    )
+# 이메일 에이전트
+email_agent = create_agent(
+    llm,
+    tools=[send_email],
+    system_prompt="당신은 이메일 작성 도우미입니다."
+)
 
 # 하위 에이전트를 도구로 래핑
 @tool
 def schedule_event(request: str) -> str:
     """자연어 요청을 기반으로 캘린더 이벤트를 예약합니다."""
-    result = st.session_state.calendar_agent.invoke({
+    result = calendar_agent.invoke({
         "messages": [{"role": "user", "content": request}]
     })
     return result["messages"][-1].content
@@ -62,22 +61,21 @@ def schedule_event(request: str) -> str:
 @tool
 def manage_email(request: str) -> str:
     """자연어 요청을 기반으로 이메일을 전송합니다."""
-    result = st.session_state.email_agent.invoke({
+    result = email_agent.invoke({
         "messages": [{"role": "user", "content": request}]
     })
     return result["messages"][-1].content
 
 # 슈퍼바이저 에이전트
-if "supervisor" not in st.session_state:
-    st.session_state.supervisor = create_agent(
-        st.session_state.llm,
-        tools=[schedule_event, manage_email],
-        system_prompt=(
-            "당신은 친절한 개인 비서입니다. "
-            "캘린더 일정을 등록하고 이메일을 보낼 수 있습니다. "
-            "사용자의 요청을 적절한 도구 호출로 분해하고, 그 결과를 조율하세요."
-        )
+supervisor = create_agent(
+    llm,
+    tools=[schedule_event, manage_email],
+    system_prompt=(
+        "당신은 친절한 개인 비서입니다. "
+        "캘린더 일정을 등록하고 이메일을 보낼 수 있습니다. "
+        "사용자의 요청을 적절한 도구 호출로 분해하고, 그 결과를 조율하세요."
     )
+)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -90,7 +88,7 @@ refresh_button = st.sidebar.button("대화 내용 초기화")
 
 if refresh_button:
     st.session_state.messages = []
-    st.experimental_rerun()
+    st.rerun()
 
 # ---------------------------------------------------------------------------------
 # 메인 영역
@@ -101,10 +99,11 @@ with st.form(key='assistant_form', clear_on_submit=True):
 
     if submit_button and user_input:
         st.session_state.messages.append(HumanMessage(content=user_input))
-        
+
+        # 슈퍼바이저 에이전트 실행 및 응답 추출
         try:
             with st.spinner("처리 중..."):
-                result = st.session_state.supervisor.invoke({
+                result = supervisor.invoke({
                     "messages": [{"role": "user", "content": user_input}]
                 })
                 
@@ -123,6 +122,7 @@ if st.session_state.messages:
 
 # 대화 이력
 st.subheader("대화 이력")
+# 대화 이력을 순서대로 표시
 for idx, msg in enumerate(st.session_state.messages):
     if isinstance(msg, HumanMessage):
         message(msg.content, is_user=True, key=f"user_{idx}")

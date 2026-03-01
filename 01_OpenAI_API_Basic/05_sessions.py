@@ -21,6 +21,17 @@
 # - `SQLiteSession(session_id)`를 사용하면 SDK가 대화를 DB에 저장/불러와서, 같은 `session`으로 실행할 때마다 맥락이 이어집니다.
 #
 # 활용: 채팅봇, 고객지원 에이전트 등 다회차 대화.
+#
+# | 세션 | 위치 | 특징 | 용도 |
+# |---|---|---|---|
+# | `SQLiteSession` | `agents` | 기본 내장, 인메모리/파일 저장 | 개발/프로토타입 |
+# | `AsyncSQLiteSession` | `agents.extensions.memory` | 비동기 전용 SQLite | 비동기 환경 |
+# | `AdvancedSQLiteSession` | `agents.extensions.memory` | 브랜치, 토큰 사용량 분석 | 고급 분석 필요 시 |
+# | `SQLAlchemySession` | `agents.extensions.memory` | PostgreSQL, MySQL 등 지원 | 프로덕션 DB |
+# | `RedisSession` | `agents.extensions.memory` | Redis 기반 분산 저장 | 대규모 서비스 |
+# | `EncryptedSession` | `agents.extensions.memory` | 다른 세션을 암호화로 래핑 | 보안 필요 시 |
+# | `OpenAIConversationsSession` | `agents` | OpenAI 서버에 대화 저장 | OpenAI 플랫폼 활용 |
+# | `CustomSession` | 직접 구현 | `Session` 프로토콜 구현 | Django, MongoDB 등 |
 
 # %%
 from dotenv import load_dotenv
@@ -34,7 +45,7 @@ Model = "gpt-5-nano"
 # %% [markdown]
 # ## 세션 없이 실행 (맥락 없음)
 #
-# 세션 없이 두 번 호출하면, 두 번째 질문 "What state is it in?"에 대한 맥락(금문교가 샌프란시스코에 있다는 것)이 없습니다.
+# 세션 없이 두 번 호출하면, 두 번째 질문에 대한 맥락(이전 대화 내역과 연관된)이 없습니다.
 
 # %%
 agent = Agent(
@@ -100,8 +111,8 @@ print("A3:", result3.final_output)
 # 예: `SQLiteSession("user_456", "conversations.db")`로 사용자/채널별 분리.
 
 # %%
-session_b = SQLiteSession("another_user_456")
-result_b = await Runner.run(agent, "남산 팔각정은 어느 도시에 있나요?", session=session_b)
+session_b = SQLiteSession("another_user_345")
+result_b = await Runner.run(agent, "그곳 인구는 얼마인가요?", session=session_b)
 print("User B - A1:", result_b.final_output)
 
 # %% [markdown]

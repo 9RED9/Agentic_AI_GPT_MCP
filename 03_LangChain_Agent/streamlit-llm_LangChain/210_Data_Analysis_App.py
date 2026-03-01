@@ -61,6 +61,7 @@ def create_pandas_tool(df):
         Returns:
             쿼리 실행 결과 (문자열)
         """
+        # 안전한 네임스페이스에서 pandas 쿼리 실행
         try:
             # 안전한 실행을 위한 제한된 네임스페이스
             safe_dict = {
@@ -131,8 +132,9 @@ st.sidebar.title("📊 데이터 관리")
 uploaded_file = st.sidebar.file_uploader("CSV 파일 업로드", type=["csv"])
 
 if uploaded_file is not None:
+    # CSV 파일 읽기 및 에이전트 재생성
     try:
-        df = pd.read_csv(uploaded_file)
+        df = pd.read_csv(uploaded_file, index_col=0)
         st.session_state.df = df
         st.session_state.agent = create_dataframe_agent(
             st.session_state.llm,
@@ -152,6 +154,7 @@ if st.sidebar.button("예제 데이터 로드"):
         '지역': ['서울', '부산', '대구'] * 10
     }
     df = pd.DataFrame(data)
+    # 파생 컬럼 계산 (이익, 이익률)
     df['이익'] = df['매출'] - df['비용']
     df['이익률'] = (df['이익'] / df['매출'] * 100).round(2)
     
@@ -193,6 +196,7 @@ else:
     
     if st.button("🔍 분석 실행", type="primary") and query:
         with st.spinner("분석 중..."):
+            # 에이전트 실행 및 결과 추출
             try:
                 result = st.session_state.agent.invoke({
                     "messages": [HumanMessage(content=query)]
