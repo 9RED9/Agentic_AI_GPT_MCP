@@ -1,0 +1,146 @@
+"""
+여행·지식 베이스 RAG 챗봇 (Flask + HTML)
+
+- Streamlit 없이 Flask로 JSON API를 제공하고, HTML 한 장(바닐라 JavaScript)으로 채팅 UI를 구현합니다.
+- 에이전트 구성은 11_Rag_Agent_app.py(Streamlit 버전)와 동일:
+  날씨(get_weather) + 웹 검색(WebSearchTool) + RAG(FileSearchTool + OpenAI Vector Store)
+- 실행: python app.py  ->  브라우저에서 http://localhost:8000 접속
+
+라우트 구성:
+  GET  /       채팅 UI(index.html) 반환
+  POST /chat   {"message": "..."} 를 받아 에이전트 실행 후 {"reply": "..."} 반환
+  POST /reset  대화 기록 초기화
+"""
+
+import threading
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, send_file
+
+import openai
+from agents import Agent, Runner, function_tool, WebSearchTool, FileSearchTool
+
+load_dotenv()
+
+OPENAI_MODEL = "gpt-5.4-mini"
+PORT = 8000
+BASE_DIR = Path(__file__).resolve().parent
+
+# ---------------------------------------------------------------------------------
+# Vector Store 초기 설정 (서버 시작 시 1회)
+# - 10/11번 예제와 동일: 같은 이름의 Vector Store가 있으면 재사용
+# ---------------------------------------------------------------------------------
+VS_NAME = "notebook-faq-kb"
+DATA_DIR = BASE_DIR.parent / "data"
+
+client = openai.OpenAI()
+existing = [vs for vs in client.vector_stores.list() if vs.name == VS_NAME]
+
+if existing:
+    vs_id = existing[0].id
+    print(f"기존 Vector Store 재사용: {vs_id}")
+else:
+    vs = client.vector_stores.create(name=VS_NAME)
+    vs_id = vs.id
+    files_to_upload = [
+        open(DATA_DIR / "faqs.json", "rb"),
+        open(DATA_DIR / "knowledgeBase.json", "rb"),
+    ]
+    try:
+        client.vector_stores.file_batches.upload_and_poll(
+            vector_store_id=vs_id, files=files_to_upload,
+        )
+        print(f"Vector Store 생성 및 파일 업로드 완료: {vs_id}")
+    finally:
+        for f in files_to_upload:
+            f.close()
+
+
+# 노트북과 동일: 날씨 도구 (open-meteo API)
+@function_tool
+def get_weather(위도: float, 경도: float) -> str:
+    """주어진 위도와 경도에서의 현재 기온(섭씨)을 반환합니다."""
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={위도}&longitude={경도}&current=temperature_2m"
+    )
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    temp = data.get("current", {}).get("temperature_2m")
+    return f"{temp}°C" if temp is not None else "Unknown"
+
+
+# 에이전트는 서버 시작 시 1회만 생성해서 재사용
+agent = Agent(
+    name="여행·지식 베이스 에이전트",
+    instructions=(
+        "당신은 여행 계획과 회사 FAQ를 도와주는 에이전트입니다. "
+        "날씨가 필요하면 get_weather, 최신 정보는 WebSearchTool을 사용하세요. "
+        "사용자의 질문이 환불, 계정, 비밀번호, 이메일, 보안, 전화 상담, 주문 등과 "
+        "조금이라도 관련되면 반드시 file_search 도구를 먼저 호출하여 지식 베이스를 검색하세요. "
+        "file_search 결과를 기반으로만 답하고, 결과가 없으면 '정보를 찾을 수 없습니다'라고 답하세요. "
+        "절대로 지식 베이스를 검색하지 않고 추측으로 답하지 마세요. 답은 간결하게 하세요."
+    ),
+    model=OPENAI_MODEL,
+    tools=[get_weather, WebSearchTool(), FileSearchTool(vector_store_ids=[vs_id])],
+)
+
+# ---------------------------------------------------------------------------------
+# 대화 상태 (서버 메모리에 유지 - Streamlit session_state에 해당)
+# - threaded=True로 실행하면 요청이 동시에 처리될 수 있으므로 Lock으로 보호
+# ---------------------------------------------------------------------------------
+messages = []
+messages_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------------
+# Flask 앱과 라우트
+# ---------------------------------------------------------------------------------
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    """채팅 UI 페이지 반환"""
+    return send_file(BASE_DIR / "index.html")
+
+
+@app.post("/chat")
+def chat():
+    """사용자 메시지를 받아 에이전트를 실행하고 답변을 JSON으로 반환"""
+    body = request.get_json(silent=True) or {}
+    user_input = (body.get("message") or "").strip()
+    if not user_input:
+        return jsonify(error="메시지가 비어 있습니다."), 400
+
+    # 사용자 메시지를 대화 기록에 추가하고, 전체 기록의 복사본으로 에이전트 실행
+    with messages_lock:
+        messages.append({"role": "user", "content": user_input})
+        history = list(messages)
+
+    # Runner.run_sync: Flask 요청 처리 스레드에는 실행 중인 이벤트 루프가 없으므로 사용 가능
+    try:
+        result = Runner.run_sync(agent, input=history)
+        reply = str(result.final_output or "응답이 생성되지 않았습니다.")
+    except Exception as e:
+        reply = f"에러가 발생했습니다: {e}"
+
+    with messages_lock:
+        messages.append({"role": "assistant", "content": reply})
+
+    return jsonify(reply=reply)
+
+
+@app.post("/reset")
+def reset():
+    """대화 기록 초기화"""
+    with messages_lock:
+        messages.clear()
+    return jsonify(ok=True)
+
+
+if __name__ == "__main__":
+    print(f"RAG 챗봇 서버 시작: http://localhost:{PORT}  (종료: Ctrl+C)")
+    app.run(host="127.0.0.1", port=PORT, threaded=True)
