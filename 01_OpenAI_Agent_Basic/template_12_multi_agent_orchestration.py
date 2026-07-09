@@ -1,0 +1,503 @@
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.0
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # 12. Multi-Agent Orchestration (코드 기반 멀티에이전트 오케스트레이션)
+#
+# **04_Handoffs**에서는 LLM이 자율적으로 핸드오프를 결정하는 **LLM 기반 오케스트레이션**을 배웠습니다.
+# 이번에는 **코드로 직접** 에이전트 흐름을 제어하는 패턴을 학습합니다.
+#
+# ### LLM 기반 vs 코드 기반 오케스트레이션
+#
+# | 구분 | LLM 기반 (Handoffs) | 코드 기반 |
+# |------|-------------------|----------|
+# | 제어 주체 | LLM이 자율 판단 | 개발자가 코드로 제어 |
+# | 예측 가능성 | 낮음 (LLM 판단에 의존) | 높음 (결정적 흐름) |
+# | 유연성 | 높음 | 보통 |
+# | 비용/속도 | 변동적 | 예측 가능 |
+# | 적합한 경우 | 복잡한 대화, 분류가 어려운 경우 | 파이프라인, 배치 처리, 정해진 워크플로우 |
+#
+# ### 주요 패턴
+# 1. **순차 체이닝 (Sequential Chaining)**: A → B → C
+# 2. **병렬 실행 (Parallelization)**: A, B, C 동시 실행
+# 3. **분류 → 라우팅 (Classification + Routing)**: 분류 후 전문 에이전트에 전달
+
+# %%
+import os
+from dotenv import load_dotenv
+
+# 현재 실행 중인 Python 파일의 디렉토리를 기준으로 .env 경로 설정
+#current_dir = os.path.dirname(os.path.abspath(__file__))
+current_dir = os.getcwd() # 현재경로
+parent_dir = os.path.dirname(current_dir) # os.path.dirname()을 한 번 감싸주면 상위 폴더 경로가 됩니다.
+dotenv_path = os.path.join(parent_dir, '.env') # 3. 상위 폴더에 있는 진짜 .env 파일 경로 지정
+
+# 디버깅을 위한 출력
+print("수정된 .env 예상 경로:", dotenv_path)
+
+# 4. override=True 옵션을 주어 기존의 잘못된 키 값을 확실하게 덮어씁니다.
+is_loaded = load_dotenv(dotenv_path, override=True)
+print("Env loaded:", is_loaded)
+
+# 5. API 키 확인 (앞뒤 글자만 확인)
+api_key = os.environ.get("OPENAI_API_KEY")
+if api_key:
+    print(f"로드된 API Key: {api_key[:12]}...{api_key[-4:]}")
+else:
+    print("❌ 여전히 API Key를 찾을 수 없습니다. 경로를 다시 확인해주세요.")
+
+# %%
+import openai
+import asyncio
+
+Model = "gpt-5.4-mini"
+
+# %% [markdown]
+# ## 1. 순차 체이닝 (Sequential Chaining)
+#
+# 에이전트A의 출력을 에이전트B의 입력으로 전달하는 파이프라인입니다.
+# 각 단계가 순서대로 실행됩니다.
+#
+# ```
+# [작성 에이전트] → 초안 → [편집 에이전트] → 수정본 → [번역 에이전트] → 최종 결과
+# ```
+
+# %%
+# Step 1: 글 작성 에이전트
+# Step 2: 편집 에이전트
+# Step 3: 번역 에이전트
+# 순차 체이닝 실행
+    # Step 1: 글 작성
+    # Step 2: 편집 (이전 단계의 출력을 입력으로 전달)
+    # Step 3: 번역 (이전 단계의 출력을 입력으로 전달)
+
+# %%
+from agents import Agent, Runner, trace
+
+# Step 1: 글 작성 에이전트
+writer_agent = Agent(
+    name="작성기",
+    instructions="""당신은 기술 블로그 작성자입니다.
+주어진 주제에 대해 3~4문장의 짧은 기술 소개글을 작성하세요.
+전문 용어를 적절히 사용하되 이해하기 쉽게 작성하세요.""",
+    model=Model,
+)
+
+# Step 2: 편집 에이전트
+editor_agent = Agent(
+    name="편집기",
+    instructions="""당신은 전문 편집자입니다.
+주어진 글을 다음 기준으로 수정하세요:
+- 문법 오류 수정
+- 문장 가독성 향상
+- 불필요한 표현 제거
+수정된 글만 출력하세요.""",
+    model=Model,
+)
+
+# Step 3: 번역 에이전트
+translator_agent = Agent(
+    name="번역기",
+    instructions="""당신은 한영 번역가입니다.
+주어진 한국어 글을 자연스러운 영어로 번역하세요.
+번역된 영어만 출력하세요.""",
+    model=Model,
+)
+
+# 순차 체이닝 실행
+with trace("순차 체이닝: 작성 → 편집 → 번역"):
+    # Step 1: 글 작성
+    write_result = await Runner.run(writer_agent, "에이전트 AI에 대해 소개글을 작성해주세요.")
+    print(f"[Step 1] 초안:\n{write_result.final_output}\n")
+
+    # Step 2: 편집 (이전 단계의 출력을 입력으로 전달)
+    edit_result = await Runner.run(editor_agent, write_result.final_output)
+    print(f"[Step 2] 편집본:\n{edit_result.final_output}\n")
+
+    # Step 3: 번역 (이전 단계의 출력을 입력으로 전달)
+    translate_result = await Runner.run(translator_agent, edit_result.final_output)
+    print(f"[Step 3] 번역본:\n{translate_result.final_output}")
+
+# %% [markdown]
+# ## 2. 병렬 실행 (Parallelization)
+#
+# 서로 독립적인 에이전트를 `asyncio.gather()`로 **동시에** 실행하여 시간을 절약합니다.
+#
+# ```
+#         ┌→ [감성 분석 에이전트] → 결과1   ─┐
+# [입력] ──┼→ [키워드 추출 에이전트] → 결과2 ─┼→ [종합]
+#         └→ [요약 에이전트] → 결과3   ─────┘
+# ```
+
+# %%
+# 3개의 독립적인 분석 에이전트
+# asyncio.gather로 3개 에이전트를 동시에 실행
+
+# %%
+# 3개의 독립적인 분석 에이전트
+sentiment_agent = Agent(
+    name="감성 분석기",
+    instructions="""주어진 텍스트의 감성을 분석하세요.
+결과 형식: "감성: [긍정/부정/중립], 신뢰도: [높음/보통/낮음], 이유: [간단한 설명]" """,
+    model=Model,
+)
+
+keyword_agent = Agent(
+    name="키워드 추출기",
+    instructions="""주어진 텍스트에서 핵심 키워드 3~5개를 추출하세요.
+결과 형식: "키워드: [키워드1], [키워드2], [키워드3], ..." """,
+    model=Model,
+)
+
+summary_agent = Agent(
+    name="요약기",
+    instructions="""주어진 텍스트를 한 문장으로 요약하세요.
+결과 형식: "요약: [한 문장 요약]" """,
+    model=Model,
+)
+
+text_to_analyze = """
+OpenAI의 Agent SDK는 개발자들이 AI 에이전트를 쉽게 만들 수 있도록 설계되었습니다.
+핸드오프, 도구 사용, 가드레일 등의 기능을 제공하여 복잡한 AI 워크플로우를
+간단한 코드로 구현할 수 있게 해줍니다. 특히 Python 개발자에게 친숙한 인터페이스를
+제공하며, 프로덕션 환경에서의 안정성도 고려되어 있습니다.
+"""
+
+# asyncio.gather로 3개 에이전트를 동시에 실행
+with trace("병렬 분석"):
+    sentiment_result, keyword_result, summary_result = await asyncio.gather(
+        Runner.run(sentiment_agent, text_to_analyze),
+        Runner.run(keyword_agent, text_to_analyze),
+        Runner.run(summary_agent, text_to_analyze),
+    )
+
+print(f"{sentiment_result.final_output}")
+print(f"{keyword_result.final_output}")
+print(f"{summary_result.final_output}")
+
+
+# %% [markdown]
+# ## 3. 분류 → 라우팅 (Classification + Routing)
+#
+# **Structured Output**으로 입력을 분류한 후, 결과에 따라 적절한 전문 에이전트를 실행합니다.
+#
+# ```
+# [입력] → [분류 에이전트] → 카테고리 → [전문 에이전트 선택] → [전문 에이전트 실행] → [응답]
+# ```
+
+# %%
+# 분류 결과를 위한 Pydantic 모델
+class RequestClassification(BaseModel):
+# 분류 에이전트
+# 전문 에이전트들
+# 카테고리 → 에이전트 매핑
+
+
+# %%
+from pydantic import BaseModel
+
+# 분류 결과를 위한 Pydantic 모델
+class RequestClassification(BaseModel):
+    category: str  # "기술지원", "결제문의", "일반문의"
+    confidence: float  # 0.0 ~ 1.0
+    reason: str
+
+# 분류 에이전트
+classifier_agent = Agent(
+    name="요청 분류기",
+    instructions="""고객의 요청을 다음 카테고리 중 하나로 분류하세요:
+- "기술지원": 소프트웨어 오류, 설치 문제, 기술적 질문
+- "결제문의": 요금, 환불, 결제 수단, 구독 관련
+- "일반문의": 영업시간, 위치, 서비스 소개 등 일반 질문
+
+category에 정확한 카테고리명을 넣고, confidence에 확신도(0~1)를 넣으세요.""",
+    model=Model,
+    output_type=RequestClassification,
+)
+
+# 전문 에이전트들
+tech_support_agent = Agent(
+    name="기술지원 전문가",
+    instructions="당신은 기술지원 전문가입니다. 소프트웨어 문제를 해결하고 기술적 도움을 제공합니다.",
+    model=Model,
+)
+
+billing_agent = Agent(
+    name="결제 전문가",
+    instructions="당신은 결제 전문가입니다. 요금, 환불, 구독 관련 질문에 답변합니다.",
+    model=Model,
+)
+
+general_agent = Agent(
+    name="일반 상담사",
+    instructions="당신은 일반 상담사입니다. 서비스에 대한 일반적인 질문에 답변합니다.",
+    model=Model,
+)
+
+# 카테고리 → 에이전트 매핑
+agent_map = {
+    "기술지원": tech_support_agent,
+    "결제문의": billing_agent,
+    "일반문의": general_agent,
+}
+
+# %%
+# 분류 → 라우팅 실행
+        # Step 1: 분류
+        # Step 2: 라우팅 - 분류 결과에 따라 적절한 에이전트 선택
+        # Step 3: 전문 에이전트 실행
+
+
+# %%
+# 분류 → 라우팅 실행
+async def handle_customer_request(request: str):
+    with trace("분류 → 라우팅"):
+        # Step 1: 분류
+        classification_result = await Runner.run(classifier_agent, request)
+        classification = classification_result.final_output
+        print(f"분류 결과: {classification.category} (확신도: {classification.confidence:.0%})")
+        print(f"   이유: {classification.reason}")
+
+        # Step 2: 라우팅 - 분류 결과에 따라 적절한 에이전트 선택
+        selected_agent = agent_map.get(classification.category, general_agent)
+        print(f"선택된 에이전트: {selected_agent.name}\n")
+
+        # Step 3: 전문 에이전트 실행
+        response = await Runner.run(selected_agent, request)
+        print(f"응답: {response.final_output}")
+
+    return response.final_output
+
+
+# %%
+# 테스트 1: 기술지원 질문
+await handle_customer_request("프로그램이 갑자기 멈추고 에러 메시지가 떠요. 어떻게 해야 하나요?")
+
+# %%
+# 테스트 2: 결제 질문
+
+# %%
+# 테스트 3: 일반 질문
+
+# %% [markdown]
+# ## 4. 종합 패턴: 병렬 + 순차 조합
+#
+# 실전에서는 여러 패턴을 **조합**하여 사용합니다.
+#
+# ```
+# [고객 리뷰] ──→ [병렬 분석] ──→ [종합 에이전트] ──→ [최종 보고서]
+#                  ├ 감성 분석
+#                  ├ 키워드 추출
+#                  └ 요약
+# ```
+
+# %%
+# 종합 보고서를 작성하는 에이전트
+    # Step 1: 병렬 분석 (동시 실행)
+    # Step 2: 순차 체이닝 - 분석 결과를 종합
+
+# %%
+# 종합 보고서를 작성하는 에이전트
+report_agent = Agent(
+    name="보고서 작성기",
+    instructions="""당신은 분석 보고서 작성자입니다.
+주어진 분석 결과들을 종합하여 간결한 보고서를 작성하세요.
+보고서 형식:
+---
+[분석 보고서]
+- 요약: ...
+- 감성: ...
+- 핵심 키워드: ...
+- 종합 의견: (위 분석을 바탕으로 한 줄 의견)
+---""",
+    model=Model,
+)
+
+customer_review = """
+이 제품 정말 좋아요! 배송도 빠르고 포장도 꼼꼼했습니다.
+다만 설명서가 영어로만 되어 있어서 처음에 좀 헷갈렸어요.
+전체적으로는 가격 대비 성능이 훌륭하고, 다음에도 이 브랜드를 구매할 의향이 있습니다.
+"""
+
+with trace("종합 분석 파이프라인"):
+    # Step 1: 병렬 분석 (동시 실행)
+    print("Step 1: 병렬 분석 실행 중...\n")
+    s_result, k_result, sm_result = await asyncio.gather(
+        Runner.run(sentiment_agent, customer_review),
+        Runner.run(keyword_agent, customer_review),
+        Runner.run(summary_agent, customer_review),
+    )
+
+    print(f"  감성: {s_result.final_output}")
+    print(f"  키워드: {k_result.final_output}")
+    print(f"  요약: {sm_result.final_output}")
+
+    # Step 2: 순차 체이닝 - 분석 결과를 종합
+    print(f"\nStep 2: 종합 보고서 작성 중...\n")
+    combined_input = f"""다음 분석 결과를 종합해주세요:
+
+원본 리뷰: {customer_review}
+
+분석 결과:
+1. {s_result.final_output}
+2. {k_result.final_output}
+3. {sm_result.final_output}
+"""
+
+report_result = await Runner.run(report_agent, combined_input)
+print(f"📊 최종 보고서:\n{report_result.final_output}")
+
+# %% [markdown]
+# ### 실습 문제
+#
+# **뉴스 기사 브리핑 파이프라인 (병렬 분석 + 순차 종합 패턴)**
+#
+# 본문 4번 패턴처럼 **병렬 분석 → 순차 종합** 구조로 뉴스 기사 브리핑 시스템을 만드세요.
+#
+# 1. **병렬 분석 (asyncio.gather)**: 세 에이전트를 동시에 실행하세요.
+#    - **제목 생성기**: 기사에 어울리는 제목 1개 생성
+#    - **핵심 문장 추출기**: 기사에서 가장 중요한 문장 2개 추출
+#    - **카테고리 분류기**: `경제 / 기술 / 사회` 중 하나로 분류
+#
+# 2. **순차 종합**: **브리핑 작성기** 에이전트가 세 분석 결과를 입력으로 받아
+#    `제목 / 카테고리 / 핵심 내용 / 한 줄 평` 형식의 **3~4줄 브리핑**을 작성하세요.
+#
+# 3. 전체 파이프라인을 `trace("뉴스 브리핑 파이프라인")`으로 감싸세요.
+#
+# ### 테스트 입력 예시
+#
+# ```
+# 국내 연구진이 차세대 이차전지인 전고체 배터리의 수명을 3배 늘리는
+# 신소재를 개발했다. 이번 기술은 전기차 주행거리 향상에 크게 기여할 것으로
+# 기대되며, 연구팀은 3년 내 상용화를 목표로 국내 배터리 기업들과
+# 협력을 논의 중이라고 밝혔다.
+# ```
+#
+# 👉 세 분석 결과가 동시에 출력된 뒤, 이를 종합한 최종 브리핑이 출력되어야 합니다.
+#
+
+# %% [markdown]
+# ### 문제 요약
+#
+# **뉴스 기사 브리핑 파이프라인 (병렬 분석 + 순차 종합 패턴)**
+#
+# 1. **병렬 분석**: 제목 생성기 / 핵심 문장 추출기 / 카테고리 분류기를 `asyncio.gather()`로 동시 실행
+# 2. **순차 종합**: 브리핑 작성기가 세 분석 결과를 종합해 3~4줄 브리핑 작성
+# 3. 전체 파이프라인을 `trace()`로 감싸기
+
+# %% [markdown]
+# ## 1. 병렬 분석 에이전트 3개 정의
+#
+# 세 에이전트는 서로의 결과가 필요 없는 **독립적인 분석**이므로 병렬 실행 대상입니다.
+
+# %%
+from agents import Agent, Runner, trace
+
+# 병렬 분석 에이전트 1: 제목 생성기
+title_agent = Agent(
+    name="제목 생성기",
+    instructions="""주어진 뉴스 기사에 어울리는 제목 1개를 만드세요.
+결과 형식: "제목: [제목]" """,
+    model=Model,
+)
+
+# 병렬 분석 에이전트 2: 핵심 문장 추출기
+key_sentence_agent = Agent(
+    name="핵심 문장 추출기",
+    instructions="""주어진 뉴스 기사에서 가장 중요한 문장 2개를 추출하세요.
+결과 형식: "핵심 문장: 1) [문장1] 2) [문장2]" """,
+    model=Model,
+)
+
+# 병렬 분석 에이전트 3: 카테고리 분류기
+category_agent = Agent(
+    name="카테고리 분류기",
+    instructions="""주어진 뉴스 기사를 경제 / 기술 / 사회 중 하나로 분류하세요.
+결과 형식: "카테고리: [분류], 이유: [간단한 설명]" """,
+    model=Model,
+)
+
+# 순차 종합 에이전트: 브리핑 작성기
+briefing_agent = Agent(
+    name="브리핑 작성기",
+    instructions="""당신은 뉴스 브리핑 작성자입니다.
+주어진 분석 결과들을 종합하여 3~4줄의 간결한 브리핑을 작성하세요.
+브리핑 형식:
+---
+[뉴스 브리핑]
+- 제목: ...
+- 카테고리: ...
+- 핵심 내용: ...
+- 한 줄 평: ...
+---""",
+    model=Model,
+)
+
+# %% [markdown]
+# ## 2. 병렬 실행 → 순차 종합
+#
+# - **Step 1**: 독립적인 세 분석을 `asyncio.gather()`로 동시 실행 (시간 절약)
+# - **Step 2**: 세 결과를 하나의 입력으로 묶어 브리핑 작성기에 **순차 전달**
+#
+
+# %%
+news_article = """
+국내 연구진이 차세대 이차전지인 전고체 배터리의 수명을 3배 늘리는
+신소재를 개발했다. 이번 기술은 전기차 주행거리 향상에 크게 기여할 것으로
+기대되며, 연구팀은 3년 내 상용화를 목표로 국내 배터리 기업들과
+협력을 논의 중이라고 밝혔다.
+"""
+
+with trace("뉴스 브리핑 파이프라인"):
+    # Step 1: 병렬 분석 - 세 에이전트를 동시에 실행
+    print("Step 1: 병렬 분석 실행 중...\n")
+    title_result, key_result, category_result = await asyncio.gather(
+        Runner.run(title_agent, news_article),
+        Runner.run(key_sentence_agent, news_article),
+        Runner.run(category_agent, news_article),
+    )
+
+    print(f"  {title_result.final_output}")
+    print(f"  {key_result.final_output}")
+    print(f"  {category_result.final_output}")
+
+    # Step 2: 순차 종합 - 세 분석 결과를 브리핑 작성기에 전달
+    print("\nStep 2: 브리핑 작성 중...\n")
+    combined_input = f"""다음 분석 결과를 종합해 브리핑을 작성해주세요:
+
+원본 기사: {news_article}
+
+분석 결과:
+1. {title_result.final_output}
+2. {key_result.final_output}
+3. {category_result.final_output}
+"""
+    briefing_result = await Runner.run(briefing_agent, combined_input)
+
+print(f"최종 브리핑:\n{briefing_result.final_output}")
+
+# %% [markdown]
+# ### 정리
+#
+# | 단계 | 패턴 | 코드 |
+# |------|------|------|
+# | Step 1 | 병렬 실행 | `asyncio.gather(Runner.run(...), Runner.run(...), Runner.run(...))` |
+# | Step 2 | 순차 체이닝 | 세 결과를 문자열로 합쳐 `Runner.run(briefing_agent, combined_input)` |
+# | 전체 | 추적 | `with trace("뉴스 브리핑 파이프라인"):` 로 한 트레이스에 묶음 |
+#
+# - 제목/핵심 문장/카테고리는 **서로 독립적**이므로 병렬 실행 → 실행 시간 절약
+# - 브리핑 작성은 세 결과가 **모두 필요**하므로 병렬 분석이 끝난 뒤 순차 실행
+# - 실전 파이프라인은 이렇게 "독립적인 부분은 병렬, 의존적인 부분은 순차"로 조합합니다.
+#
